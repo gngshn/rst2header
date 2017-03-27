@@ -2,6 +2,7 @@
   <dictionary name="grant_shen">
     <words>
       <w>goto</w>
+      <w>longtable</w>
       <w>setregistertablestyle</w>
       <w>stdint</w>
       <w>tabularcolumns</w>

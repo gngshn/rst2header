@@ -1,8 +1,7 @@
-from io import StringIO
 import os
 import re
 import sys
-
+from io import StringIO
 
 reserved_str = '--'
 
@@ -38,12 +37,21 @@ class Register(object):
                   '     - Access\n'
                   '     - Reset\n'
                   '     - Value\n')
+    long_table_header_str = ('.. list-table::\n'
+                             '   :header-rows: 1\n'
+                             '   :class: longtable\n\n'
+                             '   * - Bits\n'
+                             '     - Description\n'
+                             '     - Access\n'
+                             '     - Reset\n'
+                             '     - Value\n')
 
     def __init__(self, name, description, offset):
         self.name = name.lower()
         self.description, self.description_ex = description
         self.offset = offset
         self.description_end = ''
+        self.is_long_table = False
         if self.description_ex:
             self.full_des = ('{} ({}, 0x{:04X}_{:04X}) {}'.
                              format(name.upper(), description[0],
@@ -59,7 +67,10 @@ class Register(object):
         reg_str = StringIO()
         reg_str.write('{}\n'.format(self.full_des))
         reg_str.write('^' * len(self.full_des) + '\n')
-        reg_str.write(Register.header_str)
+        if self.is_long_table:
+            reg_str.write(Register.long_table_header_str)
+        else:
+            reg_str.write(Register.header_str)
         for reg_field in reversed(self.reg_fields):
             reg_str.write(str(reg_field))
         reg_str.write('\n')
@@ -255,7 +266,8 @@ class RstParser(object):
             self.rst_lines[i] = line.rstrip()
 
     def set_parse_area(self):
-        if '\n'.join(self.rst_lines[0:6]) + '\n' != Module.start_str:
+        if ('\n'.join(self.rst_lines[0:self.start_file_line - 1]) + '\n' !=
+                Module.start_str):
             raise Exception('{}: rst file must start with:\n{}'.
                             format(self.file, Module.start_str))
         end = -1
@@ -264,6 +276,7 @@ class RstParser(object):
         if self.rst_lines[end] + '\n' != Module.end_str:
             raise Exception('{}: rst file must end with:\n{}'.
                             format(self.file, Module.end_str))
+        # noinspection PyAttributeOutsideInit
         self.rst_lines = self.rst_lines[6:end]
         self.end = len(self.rst_lines)
 
@@ -285,11 +298,16 @@ class RstParser(object):
         except IndexError:
             return None
         reg = Register(name, description, offset)
-        if ('\n'.join(self.rst_lines[self.i:self.i + 8]) + '\n' !=
+        if ('\n'.join(self.rst_lines[self.i:self.i + 8]) + '\n' ==
                 Register.header_str):
+            self.goto_next_n_lines(8)
+        elif ('\n'.join(self.rst_lines[self.i:self.i + 9]) + '\n' ==
+                Register.long_table_header_str):
+            reg.is_long_table = True
+            self.goto_next_n_lines(9)
+        else:
             raise Exception('{}: {}> table header string error\n'.
                             format(self.file, self.file_line))
-        self.goto_next_n_lines(8)
         self.append_all_reg_field(reg)
         return reg
 
@@ -420,6 +438,15 @@ class RstParser(object):
             raise Exception('{}: {}> {}can not find reg name'.
                             format(self.file, self.file_line, self.cur_line))
 
+    def raise_reg_name_error(self):
+        raise Exception('{}: {}> {}: register name format error\n'
+                        'notice whitespace needed and the length of \'^\',\n'
+                        'correct is\n'
+                        'NAME (des, 0xXXXX_XXXX) des_ex\n'
+                        '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n'.
+                        format(self.file, self.file_line,
+                               self.cur_line))
+
     def try_cur_pos_to_reg_attr(self):
         i = self.i
         name_match = RstParser.name_pattern.match(self.rst_lines[i])
@@ -433,21 +460,9 @@ class RstParser(object):
                 description = name_match.group(2), name_match.group(4)
                 return name, description, int(offset.replace('_', ''), 16)
             else:
-                raise Exception('{}: {}> {}: register name format error\n'
-                                'notice the whitespace and length of \'^\',\n'
-                                'correct is\n'
-                                'NAME (des, 0xXXXX_XXXX) des_ex\n'
-                                '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n'.
-                                format(self.file, self.file_line,
-                                       self.rst_lines[i - 1]))
+                self.raise_reg_name_error()
         elif RstParser.section_pattern.match(self.rst_lines[i]):
-            raise Exception('{}: {}> {}: register name format error\n'
-                            'notice the whitespace and length of \'^\',\n'
-                            'correct is\n'
-                            'NAME (des, 0xXXXX_XXXX) des_ex\n'
-                            '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n'.
-                            format(self.file, self.file_line,
-                                   self.rst_lines[i - 1]))
+            self.raise_reg_name_error()
         return '', ['', None], 0
 
     def get_all_regs(self):
@@ -465,13 +480,13 @@ def generate_header_files(modules_dir, headers_dir):
         os.mkdir(user_dir)
     if not os.path.exists(kernel_dir):
         os.mkdir(kernel_dir)
-    for module in modules:
-        input_file = os.path.join(modules_dir, module, 'registers.rst')
-        user_file = os.path.join(user_dir, '{}_reg.h'.format(module))
-        kernel_file = os.path.join(kernel_dir, '{}_reg.h'.format(module))
+    for mod in modules:
+        input_file = os.path.join(modules_dir, mod, 'registers.rst')
+        user_file = os.path.join(user_dir, '{}_reg.h'.format(mod))
+        kernel_file = os.path.join(kernel_dir, '{}_reg.h'.format(mod))
         print('convert {} to {}'.format(input_file, user_file))
         rst_parser = RstParser(input_file)
-        isp_module = Module(module)
+        isp_module = Module(mod)
         isp_module.append_regs(rst_parser.get_all_regs())
         isp_module.generate_headers(user_file)
         print('convert {} to {}'.format(input_file, kernel_file))
@@ -482,8 +497,8 @@ def merge_header_files(headers_dir):
     with open(os.path.join(headers_dir, 'isp_reg.h'), 'w') as isp_header_file:
         modules = [name for name in os.listdir(headers_dir)
                    if name.endswith('.h') and name != 'isp_reg.h']
-        for module in modules:
-            isp_header_file.write('#include "{}"\n'.format(module))
+        for mod in modules:
+            isp_header_file.write('#include "{}"\n'.format(mod))
 
 
 if __name__ == '__main__':
